@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Figma Clone</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app-container">
+        <div class="toolbar">
+            <!-- Toolbar items will go here -->
+            <button id="draw-mode" title="Draw">✏️</button>
+            <button id="select-mode" title="Select/Move">🖱️</button>
+            <button id="pan-mode" title="Pan">🖐️</button>
+            <input type="color" id="color-picker" style="display:none;" />
+        </div>
+        <div class="main-content">
+            <div class="layers-panel">
+                <h2>Layers</h2>
+                <!-- Layer items will go here -->
+            </div>
+            <div class="canvas-area">
+                <canvas id="main-canvas"></canvas>
+            </div>
+            <div class="properties-panel">
+                <h2>Properties</h2>
+                <!-- Property controls will go here -->
+            </div>
+        </div>
+    </div>
+    <script src="script.js"></script>
+</body>
+</html> 
