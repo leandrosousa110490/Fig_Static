@@ -49,6 +49,12 @@ document.addEventListener('DOMContentLoaded', () => {
     let shapeStart = { x: 0, y: 0 };
     let shapeCurrent = { x: 0, y: 0 };
 
+    // Rotation state
+    let isRotating = false;
+    let rotateStartAngle = 0;
+    let initialRotation = 0;
+    const rotationHandleDistance = 30; // world units offset above object
+
     // --- Core Drawing and Transformation Functions ---
     function redrawCanvas() {
         // Clear the canvas with the background color
@@ -64,9 +70,17 @@ document.addEventListener('DOMContentLoaded', () => {
         ctx.translate(offsetX, offsetY);
         ctx.scale(scale, scale);
 
-        // Draw all stored objects (paths and shapes)
+        // Draw all stored objects with rotation
         paths.forEach(obj => {
             if (!obj.visible) return;
+            ctx.save();
+            // Rotate around object center
+            const center = getObjectCenter(obj);
+            const angle = obj.rotation || 0;
+            ctx.translate(center.x, center.y);
+            ctx.rotate(angle);
+            ctx.translate(-center.x, -center.y);
+
             ctx.beginPath();
             ctx.strokeStyle = obj.color || '#000000';
             ctx.lineWidth = obj.lineWidth || 2;
@@ -78,32 +92,49 @@ document.addEventListener('DOMContentLoaded', () => {
             } else if (obj.type === 'circle') {
                 ctx.arc(obj.cx, obj.cy, obj.r, 0, Math.PI * 2);
                 ctx.stroke();
-            } else if (obj.type === 'triangle') {
+            } else if (obj.type === 'triangle' || obj.type === 'star') {
                 const pts = obj.points;
                 ctx.moveTo(pts[0].x, pts[0].y);
-                for (let i = 1; i < pts.length; i++) {
-                    ctx.lineTo(pts[i].x, pts[i].y);
-                }
+                for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
                 ctx.closePath();
                 ctx.stroke();
             } else if (obj.points) {  // freehand path
-                if (obj.points.length < 2) return;
+                if (obj.points.length < 2) { ctx.restore(); return; }
                 ctx.moveTo(obj.points[0].x, obj.points[0].y);
-                for (let i = 1; i < obj.points.length; i++) {
-                    ctx.lineTo(obj.points[i].x, obj.points[i].y);
-                }
+                for (let i = 1; i < obj.points.length; i++) ctx.lineTo(obj.points[i].x, obj.points[i].y);
                 ctx.stroke();
             }
 
-            // Draw bounding box if selected
+            // Draw selection indicators (bounding box, resize handles, rotate handle) INSIDE rotated context
             if (obj.selected) {
+                const bb = obj.boundingBox;
+                // Draw bounding box (now appears rotated)
                 ctx.strokeStyle = 'rgba(0, 100, 255, 0.7)';
                 ctx.lineWidth = 1 / scale;
                 ctx.setLineDash([5 / scale, 5 / scale]);
-                const bb = obj.boundingBox;
                 ctx.strokeRect(bb.minX, bb.minY, bb.maxX - bb.minX, bb.maxY - bb.minY);
                 ctx.setLineDash([]);
+
+                // Draw resize handles (now appear rotated)
+                const hs = handleSize / scale;
+                [[bb.minX, bb.minY], [bb.maxX, bb.minY], [bb.maxX, bb.maxY], [bb.minX, bb.maxY]]
+                    .forEach(([x, y]) => {
+                        ctx.fillStyle = '#ffffff';
+                        ctx.strokeStyle = '#000000';
+                        ctx.fillRect(x - hs/2, y - hs/2, hs, hs);
+                        ctx.strokeRect(x - hs/2, y - hs/2, hs, hs);
+                    });
+
+                // Draw rotation handle (now appears rotated)
+                const rotHandleY = bb.minY - (rotationHandleDistance / scale);
+                ctx.beginPath();
+                ctx.arc(center.x, rotHandleY, handleSize/(2*scale), 0, Math.PI*2);
+                ctx.fillStyle = '#ffffff';
+                ctx.fill();
+                ctx.strokeStyle = '#000000';
+                ctx.stroke();
             }
+            ctx.restore();
         });
 
         // Draw the current path if any
@@ -118,23 +149,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 ctx.lineTo(currentPathPoints[i].x, currentPathPoints[i].y);
             }
             ctx.stroke();
-        }
-
-        // Draw resize handles for selected
-        if (selectedPath && selectedPath.selected) {
-            const bb = selectedPath.boundingBox;
-            ctx.save();
-            // Handles are drawn in world coordinates already transformed by outer translate/scale
-            const hs = handleSize / scale;
-            [[bb.minX, bb.minY], [bb.maxX, bb.minY], [bb.maxX, bb.maxY], [bb.minX, bb.maxY]]
-                .forEach(([x, y]) => {
-                    ctx.fillStyle = '#ffffff';
-                    ctx.strokeStyle = '#000000';
-                    ctx.lineWidth = 1 / scale;
-                    ctx.fillRect(x - hs/2, y - hs/2, hs, hs);
-                    ctx.strokeRect(x - hs/2, y - hs/2, hs, hs);
-                });
-            ctx.restore();
         }
 
         // Draw preview shape if in shape mode
@@ -160,6 +174,23 @@ document.addEventListener('DOMContentLoaded', () => {
                 ctx.moveTo(p0.x, p0.y);
                 ctx.lineTo(p1.x, p1.y);
                 ctx.lineTo(p2.x, p2.y);
+                ctx.closePath();
+                ctx.stroke();
+            } else if (currentShapeType === 'star') {
+                // Preview a 5-point star within bounding box
+                const x = Math.min(x0, x1), y = Math.min(y0, y1);
+                const w = Math.abs(x1 - x0), h = Math.abs(y1 - y0);
+                const cx = x + w/2, cy = y + h/2;
+                const outerR = Math.min(w, h)/2;
+                const innerR = outerR * 0.5;
+                const pts = [];
+                for (let i = 0; i < 10; i++) {
+                    const angle = Math.PI/2 + i * (2 * Math.PI / 10);
+                    const r = i % 2 === 0 ? outerR : innerR;
+                    pts.push({ x: cx + Math.cos(angle)*r, y: cy + Math.sin(angle)*r });
+                }
+                ctx.moveTo(pts[0].x, pts[0].y);
+                for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
                 ctx.closePath();
                 ctx.stroke();
             }
@@ -319,7 +350,7 @@ document.addEventListener('DOMContentLoaded', () => {
             selectedPath.boundingBox.minY += dy;
             selectedPath.boundingBox.maxX += dx;
             selectedPath.boundingBox.maxY += dy;
-        } else if (selectedPath.type === 'triangle') {
+        } else if (selectedPath.type === 'triangle' || selectedPath.type === 'star') {
             selectedPath.points.forEach(pt => { pt.x += dx; pt.y += dy; });
             selectedPath.boundingBox = calculateBoundingBox(selectedPath.points);
         } else {
@@ -380,7 +411,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 shapeCurrent = { ...shapeStart };
             } else if (currentMode === 'select') {
                 const handle = getHandleAtPosition(selectedPath || {}, pos);
-                if (selectedPath && handle) {
+                if (selectedPath && handle === 'rotate') {
+                    startRotate(e, selectedPath);
+                } else if (selectedPath && handle) {
                     startResize(e, selectedPath, handle);
                 } else {
                     const clickedPath = getPathAtPosition(pos);
@@ -410,6 +443,10 @@ document.addEventListener('DOMContentLoaded', () => {
             redrawCanvas();
             return;
         }
+        if (isRotating) {
+            rotatePath(e);
+            return;
+        }
         // Change cursor for handle hover
         if (currentMode === 'select' && selectedPath) {
             const handle = getHandleAtPosition(selectedPath, pos);
@@ -419,6 +456,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 else if (handle === 'ne' || handle === 'sw') cursor = 'nesw-resize';
                 else if (handle === 'n' || handle === 's') cursor = 'ns-resize';
                 else if (handle === 'e' || handle === 'w') cursor = 'ew-resize';
+                else if (handle === 'rotate') cursor = 'alias'; // Set alias cursor for rotate handle
                 canvas.style.cursor = cursor;
                 return; // skip other cursors
             }
@@ -440,6 +478,9 @@ document.addEventListener('DOMContentLoaded', () => {
     canvas.addEventListener('mouseup', (e) => {
         if (isResizing) {
             stopResize();
+        }
+        if (isRotating) {
+            stopRotate();
         }
         if (e.button === 0) {
             if (isDrawing) stopDrawing();
@@ -471,6 +512,23 @@ document.addEventListener('DOMContentLoaded', () => {
                     const bb = calculateBoundingBox([p0, p1, p2]);
                     newObj = { id: nextPathId++, type: 'triangle', tool: 'Triangle', visible: true,
                         points: [p0, p1, p2], color: currentColor, lineWidth: 2, boundingBox: bb
+                    };
+                } else if (currentShapeType === 'star') {
+                    // Finalize star shape
+                    const x = Math.min(x0, x1), y = Math.min(y0, y1);
+                    const w = Math.abs(x1 - x0), h = Math.abs(y1 - y0);
+                    const cx = x + w/2, cy = y + h/2;
+                    const outerR = Math.min(w, h)/2;
+                    const innerR = outerR * 0.5;
+                    const pts = [];
+                    for (let i = 0; i < 10; i++) {
+                        const angle = Math.PI/2 + i * (2 * Math.PI / 10);
+                        const r = i % 2 === 0 ? outerR : innerR;
+                        pts.push({ x: cx + Math.cos(angle)*r, y: cy + Math.sin(angle)*r });
+                    }
+                    const bbStar = calculateBoundingBox(pts);
+                    newObj = { id: nextPathId++, type: 'star', tool: 'Star', visible: true,
+                        points: pts, color: currentColor, lineWidth: 2, boundingBox: bbStar
                     };
                 }
                 paths.push(newObj);
@@ -779,8 +837,33 @@ document.addEventListener('DOMContentLoaded', () => {
                point.y >= box.minY && point.y <= box.maxY;
     }
 
-    // Add utility to get handle under cursor for a path
+    // Add utility to get object center
+    function getObjectCenter(obj) {
+        if (obj.type === 'rectangle') {
+            return { x: obj.x + obj.width/2, y: obj.y + obj.height/2 };
+        } else if (obj.type === 'circle') {
+            return { x: obj.cx, y: obj.cy };
+        } else if (obj.type === 'triangle' || obj.type === 'star') {
+            const bb = obj.boundingBox;
+            return { x: (bb.minX + bb.maxX)/2, y: (bb.minY + bb.maxY)/2 };
+        } else if (obj.points) { // freehand path
+            const bb = obj.boundingBox;
+            return { x: (bb.minX + bb.maxX)/2, y: (bb.minY + bb.maxY)/2 };
+        }
+        return { x: 0, y: 0 };
+    }
+
+    // Update getHandleAtPosition to detect rotate handle
     function getHandleAtPosition(path, pos) {
+        if (selectedPath && path === selectedPath) {
+            const bb = path.boundingBox;
+            const half = handleSize / (2 * scale);
+            const center = getObjectCenter(path);
+            const rotY = bb.minY - (rotationHandleDistance / scale);
+            if (pos.x >= center.x - half && pos.x <= center.x + half && pos.y >= rotY - half && pos.y <= rotY + half) {
+                return 'rotate';
+            }
+        }
         if (!path || !path.boundingBox) return null;
         const bb = path.boundingBox;
         const half = handleSize / (2 * scale);
@@ -831,7 +914,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // pivot is always center
             pivotX = path.originalCircle.cx;
             pivotY = path.originalCircle.cy;
-        } else if (path.type === 'triangle') {
+        } else if (path.type === 'triangle' || path.type === 'star') {
             originalPoints = path.points.map(p => ({ x: p.x, y: p.y }));
             // pivot set below
         } else { // freehand
@@ -896,7 +979,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (nr > 0) selectedPath.r = nr;
             selectedPath.boundingBox = { minX: pivotX - nr, minY: pivotY - nr,
                 maxX: pivotX + nr, maxY: pivotY + nr };
-        } else if (selectedPath.type === 'triangle') {
+        } else if (selectedPath.type === 'triangle' || selectedPath.type === 'star') {
             // scale points
             const oldW = originalBB.maxX - originalBB.minX;
             const oldH = originalBB.maxY - originalBB.minY;
@@ -945,6 +1028,48 @@ document.addEventListener('DOMContentLoaded', () => {
         canvas.style.cursor = 'default';
         updatePropertiesPanel();
         updateLayersPanel();
+    }
+
+    // Add helper to get object center
+    function getObjectCenter(obj) {
+        if (obj.type === 'rectangle') {
+            return { x: obj.x + obj.width/2, y: obj.y + obj.height/2 };
+        } else if (obj.type === 'circle') {
+            return { x: obj.cx, y: obj.cy };
+        } else if (obj.type === 'triangle' || obj.type === 'star') {
+            const bb = obj.boundingBox;
+            return { x: (bb.minX + bb.maxX)/2, y: (bb.minY + bb.maxY)/2 };
+        } else if (obj.points) { // freehand path
+            const bb = obj.boundingBox;
+            return { x: (bb.minX + bb.maxX)/2, y: (bb.minY + bb.maxY)/2 };
+        }
+        return { x: 0, y: 0 };
+    }
+
+    // Add rotation functions
+    function startRotate(e, path) {
+        isRotating = true;
+        const pos = getMousePos(e);
+        const center = getObjectCenter(path);
+        rotatePivot = center;
+        rotateStartAngle = Math.atan2(pos.y - center.y, pos.x - center.x);
+        initialRotation = path.rotation || 0;
+        canvas.style.cursor = 'alias'; // Changed cursor for rotation
+    }
+
+    function rotatePath(e) {
+        if (!isRotating || !selectedPath) return;
+        const pos = getMousePos(e);
+        const angle = Math.atan2(pos.y - rotatePivot.y, pos.x - rotatePivot.x);
+        selectedPath.rotation = initialRotation + (angle - rotateStartAngle);
+        redrawCanvas();
+    }
+
+    function stopRotate() {
+        if (!isRotating) return;
+        isRotating = false;
+        canvas.style.cursor = 'default';
+        updatePropertiesPanel();
     }
 
     console.log('Figma clone: Select, Move, Pan, Zoom implemented.');
