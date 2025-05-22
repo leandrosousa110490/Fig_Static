@@ -11,6 +11,14 @@
         <div class="toolbar">
             <!-- Toolbar items will go here -->
             <button id="draw-mode" title="Draw">✏️</button>
+            <div class="shape-tool">
+                <button id="shape-mode" title="Shapes">◼️</button>
+                <div id="shape-dropdown" class="shape-dropdown">
+                    <button data-shape="rectangle">◻️</button>
+                    <button data-shape="circle">◯</button>
+                    <button data-shape="triangle">🔺</button>
+                </div>
+            </div>
             <button id="select-mode" title="Select/Move">🖱️</button>
             <button id="pan-mode" title="Pan">🖐️</button>
             <input type="color" id="color-picker" style="display:none;" />

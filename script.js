@@ -41,6 +41,14 @@ document.addEventListener('DOMContentLoaded', () => {
     let pivotY = 0;
     const handleSize = 8; // px
 
+    // Shape drawing state
+    const shapeModeButton = document.getElementById('shape-mode');
+    const shapeDropdown = document.getElementById('shape-dropdown');
+    let currentShapeType = null;
+    let isShaping = false;
+    let shapeStart = { x: 0, y: 0 };
+    let shapeCurrent = { x: 0, y: 0 };
+
     // --- Core Drawing and Transformation Functions ---
     function redrawCanvas() {
         // Clear the canvas with the background color
@@ -56,29 +64,45 @@ document.addEventListener('DOMContentLoaded', () => {
         ctx.translate(offsetX, offsetY);
         ctx.scale(scale, scale);
 
-        // Redraw all stored paths
-        paths.forEach(path => {
-            if (!path.visible) return; // Skip hidden paths
-            if (path.points.length < 2) return;
+        // Draw all stored objects (paths and shapes)
+        paths.forEach(obj => {
+            if (!obj.visible) return;
             ctx.beginPath();
-            ctx.strokeStyle = path.color || '#000000';
-            ctx.lineWidth = path.lineWidth || 2;
+            ctx.strokeStyle = obj.color || '#000000';
+            ctx.lineWidth = obj.lineWidth || 2;
             ctx.lineCap = 'round';
             ctx.lineJoin = 'round';
-            ctx.moveTo(path.points[0].x, path.points[0].y);
-            for (let i = 1; i < path.points.length; i++) {
-                ctx.lineTo(path.points[i].x, path.points[i].y);
-            }
-            ctx.stroke();
 
-            if (path.selected) {
-                // Draw bounding box for selected path
+            if (obj.type === 'rectangle') {
+                ctx.strokeRect(obj.x, obj.y, obj.width, obj.height);
+            } else if (obj.type === 'circle') {
+                ctx.arc(obj.cx, obj.cy, obj.r, 0, Math.PI * 2);
+                ctx.stroke();
+            } else if (obj.type === 'triangle') {
+                const pts = obj.points;
+                ctx.moveTo(pts[0].x, pts[0].y);
+                for (let i = 1; i < pts.length; i++) {
+                    ctx.lineTo(pts[i].x, pts[i].y);
+                }
+                ctx.closePath();
+                ctx.stroke();
+            } else if (obj.points) {  // freehand path
+                if (obj.points.length < 2) return;
+                ctx.moveTo(obj.points[0].x, obj.points[0].y);
+                for (let i = 1; i < obj.points.length; i++) {
+                    ctx.lineTo(obj.points[i].x, obj.points[i].y);
+                }
+                ctx.stroke();
+            }
+
+            // Draw bounding box if selected
+            if (obj.selected) {
                 ctx.strokeStyle = 'rgba(0, 100, 255, 0.7)';
-                ctx.lineWidth = 1 / scale; // Keep bounding box line thin
-                ctx.setLineDash([5 / scale, 5 / scale]); // Dashed line for selection
-                const bb = path.boundingBox;
+                ctx.lineWidth = 1 / scale;
+                ctx.setLineDash([5 / scale, 5 / scale]);
+                const bb = obj.boundingBox;
                 ctx.strokeRect(bb.minX, bb.minY, bb.maxX - bb.minX, bb.maxY - bb.minY);
-                ctx.setLineDash([]); // Reset line dash
+                ctx.setLineDash([]);
             }
         });
 
@@ -111,6 +135,34 @@ document.addEventListener('DOMContentLoaded', () => {
                     ctx.strokeRect(x - hs/2, y - hs/2, hs, hs);
                 });
             ctx.restore();
+        }
+
+        // Draw preview shape if in shape mode
+        if (isShaping && currentShapeType) {
+            ctx.beginPath();
+            ctx.strokeStyle = currentColor;
+            ctx.lineWidth = 2;
+            const x0 = shapeStart.x, y0 = shapeStart.y;
+            const x1 = shapeCurrent.x, y1 = shapeCurrent.y;
+            if (currentShapeType === 'rectangle') {
+                const x = Math.min(x0, x1), y = Math.min(y0, y1);
+                const w = Math.abs(x1 - x0), h = Math.abs(y1 - y0);
+                ctx.strokeRect(x, y, w, h);
+            } else if (currentShapeType === 'circle') {
+                const dx = x1 - x0, dy = y1 - y0;
+                const r = Math.hypot(dx, dy);
+                ctx.arc(x0, y0, r, 0, Math.PI * 2);
+                ctx.stroke();
+            } else if (currentShapeType === 'triangle') {
+                const p0 = { x: x0, y: y0 };
+                const p1 = { x: x1, y: y0 };
+                const p2 = { x: x0, y: y1 };
+                ctx.moveTo(p0.x, p0.y);
+                ctx.lineTo(p1.x, p1.y);
+                ctx.lineTo(p2.x, p2.y);
+                ctx.closePath();
+                ctx.stroke();
+            }
         }
 
         ctx.restore();
@@ -252,14 +304,28 @@ document.addEventListener('DOMContentLoaded', () => {
         const dx = pos.x - dragStartX;
         const dy = pos.y - dragStartY;
 
-        // Move the selected path
-        selectedPath.points.forEach(point => {
-            point.x += dx;
-            point.y += dy;
-        });
-        // Update its bounding box
-        selectedPath.boundingBox = calculateBoundingBox(selectedPath.points);
-
+        // Move object based on type
+        if (selectedPath.type === 'rectangle') {
+            selectedPath.x += dx;
+            selectedPath.y += dy;
+            selectedPath.boundingBox.minX += dx;
+            selectedPath.boundingBox.minY += dy;
+            selectedPath.boundingBox.maxX += dx;
+            selectedPath.boundingBox.maxY += dy;
+        } else if (selectedPath.type === 'circle') {
+            selectedPath.cx += dx;
+            selectedPath.cy += dy;
+            selectedPath.boundingBox.minX += dx;
+            selectedPath.boundingBox.minY += dy;
+            selectedPath.boundingBox.maxX += dx;
+            selectedPath.boundingBox.maxY += dy;
+        } else if (selectedPath.type === 'triangle') {
+            selectedPath.points.forEach(pt => { pt.x += dx; pt.y += dy; });
+            selectedPath.boundingBox = calculateBoundingBox(selectedPath.points);
+        } else {
+            selectedPath.points.forEach(point => { point.x += dx; point.y += dy; });
+            selectedPath.boundingBox = calculateBoundingBox(selectedPath.points);
+        }
         dragStartX = pos.x; // Update drag start for next segment
         dragStartY = pos.y;
 
@@ -308,6 +374,10 @@ document.addEventListener('DOMContentLoaded', () => {
         if (e.button === 0) {
             if (currentMode === 'draw') {
                 startDrawing(e);
+            } else if (currentMode === 'shape') {
+                isShaping = true;
+                shapeStart = getMousePos(e);
+                shapeCurrent = { ...shapeStart };
             } else if (currentMode === 'select') {
                 const handle = getHandleAtPosition(selectedPath || {}, pos);
                 if (selectedPath && handle) {
@@ -333,6 +403,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const pos = getMousePos(e);
         if (isResizing) {
             resizePath(e);
+            return;
+        }
+        if (isShaping && currentMode === 'shape') {
+            shapeCurrent = getMousePos(e);
+            redrawCanvas();
             return;
         }
         // Change cursor for handle hover
@@ -369,6 +444,42 @@ document.addEventListener('DOMContentLoaded', () => {
         if (e.button === 0) {
             if (isDrawing) stopDrawing();
             else if (isDragging) stopDrag();
+            else if (isShaping && currentMode === 'shape') {
+                isShaping = false;
+                // finalize shape
+                const x0 = shapeStart.x, y0 = shapeStart.y;
+                const x1 = shapeCurrent.x, y1 = shapeCurrent.y;
+                let newObj;
+                if (currentShapeType === 'rectangle') {
+                    const x = Math.min(x0, x1), y = Math.min(y0, y1);
+                    const w = Math.abs(x1 - x0), h = Math.abs(y1 - y0);
+                    newObj = { id: nextPathId++, type: 'rectangle', tool: 'Rectangle', visible: true,
+                        x, y, width: w, height: h, color: currentColor, lineWidth: 2,
+                        boundingBox: { minX: x, minY: y, maxX: x + w, maxY: y + h }
+                    };
+                } else if (currentShapeType === 'circle') {
+                    const dx = x1 - x0, dy = y1 - y0;
+                    const r = Math.hypot(dx, dy);
+                    newObj = { id: nextPathId++, type: 'circle', tool: 'Circle', visible: true,
+                        cx: x0, cy: y0, r, color: currentColor, lineWidth: 2,
+                        boundingBox: { minX: x0 - r, minY: y0 - r, maxX: x0 + r, maxY: y0 + r }
+                    };
+                } else if (currentShapeType === 'triangle') {
+                    const p0 = { x: x0, y: y0 };
+                    const p1 = { x: x1, y: y0 };
+                    const p2 = { x: x0, y: y1 };
+                    const bb = calculateBoundingBox([p0, p1, p2]);
+                    newObj = { id: nextPathId++, type: 'triangle', tool: 'Triangle', visible: true,
+                        points: [p0, p1, p2], color: currentColor, lineWidth: 2, boundingBox: bb
+                    };
+                }
+                paths.push(newObj);
+                selectPath(newObj);
+                redrawCanvas();
+                updateLayersPanel();
+                updatePropertiesPanel();
+                return;
+            }
         }
         if (isPanning) stopPan();
         if (!isDrawing && !isDragging && !isPanning) {
@@ -439,6 +550,20 @@ document.addEventListener('DOMContentLoaded', () => {
     // Set initial active button
     setActiveButton(drawModeButton);
 
+    // Toggle shape dropdown
+    shapeModeButton.addEventListener('click', () => {
+        shapeDropdown.classList.toggle('visible');
+    });
+    // Select shape type
+    shapeDropdown.querySelectorAll('button').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            currentShapeType = e.target.dataset.shape;
+            currentMode = 'shape';
+            canvas.style.cursor = 'crosshair';
+            setActiveButton(shapeModeButton);
+            shapeDropdown.classList.remove('visible');
+        });
+    });
 
     // --- Ensure canvas redraws on window resize to keep it centered ---
     // (or to adjust transformations if needed)
@@ -694,53 +819,122 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Start resizing
     function startResize(e, path, handle) {
+        if (!path) return;
         isResizing = true;
         resizeHandle = handle;
         originalBB = { ...path.boundingBox };
-        originalPoints = path.points.map(p => ({ x: p.x, y: p.y }));
-        // Determine pivot based on handle
-        switch (handle) {
-            case 'nw': pivotX = originalBB.maxX; pivotY = originalBB.maxY; break;
-            case 'ne': pivotX = originalBB.minX; pivotY = originalBB.maxY; break;
-            case 'se': pivotX = originalBB.minX; pivotY = originalBB.minY; break;
-            case 'sw': pivotX = originalBB.maxX; pivotY = originalBB.minY; break;
-            case 'n':  pivotX = originalBB.minX; pivotY = originalBB.maxY; break;
-            case 's':  pivotX = originalBB.minX; pivotY = originalBB.minY; break;
-            case 'w':  pivotX = originalBB.maxX; pivotY = originalBB.minY; break;
-            case 'e':  pivotX = originalBB.minX; pivotY = originalBB.minY; break;
+        // Handle shape types
+        if (path.type === 'rectangle') {
+            path.originalRect = { x: path.x, y: path.y, width: path.width, height: path.height };
+        } else if (path.type === 'circle') {
+            path.originalCircle = { cx: path.cx, cy: path.cy, r: path.r };
+            // pivot is always center
+            pivotX = path.originalCircle.cx;
+            pivotY = path.originalCircle.cy;
+        } else if (path.type === 'triangle') {
+            originalPoints = path.points.map(p => ({ x: p.x, y: p.y }));
+            // pivot set below
+        } else { // freehand
+            originalPoints = path.points.map(p => ({ x: p.x, y: p.y }));
         }
-        // Set cursor based on handle direction
-        if (['nw','se'].includes(handle)) canvas.style.cursor = 'nwse-resize';
-        else if (['ne','sw'].includes(handle)) canvas.style.cursor = 'nesw-resize';
-        else if (['n','s'].includes(handle))  canvas.style.cursor = 'ns-resize';
-        else if (['e','w'].includes(handle))  canvas.style.cursor = 'ew-resize';
+        // Determine pivot based on handle (use boundingBox for rectangles, triangles, freehand)
+        if (path.type !== 'circle') {
+            switch (handle) {
+                case 'nw': pivotX = originalBB.maxX; pivotY = originalBB.maxY; break;
+                case 'ne': pivotX = originalBB.minX; pivotY = originalBB.maxY; break;
+                case 'se': pivotX = originalBB.minX; pivotY = originalBB.minY; break;
+                case 'sw': pivotX = originalBB.maxX; pivotY = originalBB.minY; break;
+                case 'n':  pivotX = (originalBB.minX + originalBB.maxX)/2; pivotY = originalBB.maxY; break;
+                case 's':  pivotX = (originalBB.minX + originalBB.maxX)/2; pivotY = originalBB.minY; break;
+                case 'w':  pivotX = originalBB.maxX; pivotY = (originalBB.minY + originalBB.maxY)/2; break;
+                case 'e':  pivotX = originalBB.minX; pivotY = (originalBB.minY + originalBB.maxY)/2; break;
+            }
+        }
+        // Set cursor based on handle
+        let cursor = 'default';
+        if (['nw','se'].includes(handle)) cursor = 'nwse-resize';
+        else if (['ne','sw'].includes(handle)) cursor = 'nesw-resize';
+        else if (['n','s'].includes(handle))  cursor = 'ns-resize';
+        else if (['e','w'].includes(handle))  cursor = 'ew-resize';
+        canvas.style.cursor = cursor;
     }
 
     // Perform resizing
     function resizePath(e) {
         if (!isResizing || !selectedPath) return;
         const pos = getMousePos(e);
-        const oldW = originalBB.maxX - originalBB.minX;
-        const oldH = originalBB.maxY - originalBB.minY;
-        let newW, newH;
-        switch (resizeHandle) {
-            case 'nw': newW = pivotX - pos.x;       newH = pivotY - pos.y;       break;
-            case 'ne': newW = pos.x - pivotX;       newH = pivotY - pos.y;       break;
-            case 'se': newW = pos.x - pivotX;       newH = pos.y - pivotY;       break;
-            case 'sw': newW = pivotX - pos.x;       newH = pos.y - pivotY;       break;
-            case 'n':  newW = oldW;                 newH = pivotY - pos.y;       break;
-            case 's':  newW = oldW;                 newH = pos.y - pivotY;       break;
-            case 'w':  newW = pivotX - pos.x;       newH = oldH;                 break;
-            case 'e':  newW = pos.x - pivotX;       newH = oldH;                 break;
+
+        // Resize based on type
+        if (selectedPath.type === 'rectangle') {
+            const rect = selectedPath.originalRect;
+            // calculate new width/height based on handle
+            let nx = rect.x, ny = rect.y, nw = rect.width, nh = rect.height;
+            if (['nw','sw','w'].includes(resizeHandle)) {
+                nw = pivotX - pos.x;
+                nx = pos.x;
+            }
+            if (['ne','se','e'].includes(resizeHandle)) {
+                nw = pos.x - pivotX;
+                nx = pivotX;
+            }
+            if (['nw','ne','n'].includes(resizeHandle)) {
+                nh = pivotY - pos.y;
+                ny = pos.y;
+            }
+            if (['sw','se','s'].includes(resizeHandle)) {
+                nh = pos.y - pivotY;
+                ny = pivotY;
+            }
+            if (nw > 0) { selectedPath.x = nx; selectedPath.width = nw; }
+            if (nh > 0) { selectedPath.y = ny; selectedPath.height = nh; }
+            selectedPath.boundingBox = { minX: selectedPath.x, minY: selectedPath.y,
+                maxX: selectedPath.x + selectedPath.width, maxY: selectedPath.y + selectedPath.height };
+        } else if (selectedPath.type === 'circle') {
+            // radius based on distance from center
+            const dx = pos.x - pivotX, dy = pos.y - pivotY;
+            const nr = Math.hypot(dx, dy);
+            if (nr > 0) selectedPath.r = nr;
+            selectedPath.boundingBox = { minX: pivotX - nr, minY: pivotY - nr,
+                maxX: pivotX + nr, maxY: pivotY + nr };
+        } else if (selectedPath.type === 'triangle') {
+            // scale points
+            const oldW = originalBB.maxX - originalBB.minX;
+            const oldH = originalBB.maxY - originalBB.minY;
+            let newW,newH;
+            switch(resizeHandle) {
+                case 'nw': newW = pivotX - pos.x; newH = pivotY - pos.y; break;
+                case 'ne': newW = pos.x - pivotX; newH = pivotY - pos.y; break;
+                case 'se': newW = pos.x - pivotX; newH = pos.y - pivotY; break;
+                case 'sw': newW = pivotX - pos.x; newH = pos.y - pivotY; break;
+                case 'n': newW = oldW; newH = pivotY - pos.y; break;
+                case 's': newW = oldW; newH = pos.y - pivotY; break;
+                case 'w': newW = pivotX - pos.x; newH = oldH; break;
+                case 'e': newW = pos.x - pivotX; newH = oldH; break;
+            }
+            const sX = newW / oldW, sY = newH / oldH;
+            selectedPath.points = originalPoints.map(p => ({ x: pivotX + (p.x - pivotX) * sX,
+                                                           y: pivotY + (p.y - pivotY) * sY }));
+            selectedPath.boundingBox = calculateBoundingBox(selectedPath.points);
+        } else {
+            // freehand path
+            const oldW = originalBB.maxX - originalBB.minX;
+            const oldH = originalBB.maxY - originalBB.minY;
+            let newW,newH;
+            switch(resizeHandle) {
+                case 'nw': newW = pivotX - pos.x; newH = pivotY - pos.y; break;
+                case 'ne': newW = pos.x - pivotX; newH = pivotY - pos.y; break;
+                case 'se': newW = pos.x - pivotX; newH = pos.y - pivotY; break;
+                case 'sw': newW = pivotX - pos.x; newH = pos.y - pivotY; break;
+                case 'n': newW = oldW; newH = pivotY - pos.y; break;
+                case 's': newW = oldW; newH = pos.y - pivotY; break;
+                case 'w': newW = pivotX - pos.x; newH = oldH; break;
+                case 'e': newW = pos.x - pivotX; newH = oldH; break;
+            }
+            const sX = newW / oldW, sY = newH / oldH;
+            selectedPath.points = originalPoints.map(p => ({ x: pivotX + (p.x - pivotX) * sX,
+                                                           y: pivotY + (p.y - pivotY) * sY }));
+            selectedPath.boundingBox = calculateBoundingBox(selectedPath.points);
         }
-        const scaleX = newW / oldW;
-        const scaleY = newH / oldH;
-        // Update points
-        selectedPath.points = originalPoints.map(p => ({
-            x: pivotX + (p.x - pivotX) * scaleX,
-            y: pivotY + (p.y - pivotY) * scaleY
-        }));
-        selectedPath.boundingBox = calculateBoundingBox(selectedPath.points);
         redrawCanvas();
     }
 
