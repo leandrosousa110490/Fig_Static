@@ -55,13 +55,26 @@ document.addEventListener('DOMContentLoaded', () => {
     let initialRotation = 0;
     const rotationHandleDistance = 30; // world units offset above object
 
+    // Frame/Section drawing state
+    const frameModeButton = document.getElementById('frame-mode');
+    const frameDropdown = document.getElementById('frame-dropdown');
+    let currentFrameDrawType = null; // 'frame' or 'section'
+    let isFraming = false;
+    let frameStart = { x: 0, y: 0 };
+    let frameCurrent = { x: 0, y: 0 };
+
     // --- Core Drawing and Transformation Functions ---
     function redrawCanvas() {
         // Clear the canvas with the background color
         // Important: clearRect needs to cover the entire *visible* canvas area in canvas coordinates
         ctx.save();
         ctx.setTransform(1, 0, 0, 1, 0, 0); // Reset transform to clear
-        ctx.fillStyle = 'white';
+        // Set canvas background based on dark mode
+        if (document.body.classList.contains('dark-mode')) {
+            ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--canvas-background').trim();
+        } else {
+            ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--canvas-background').trim(); // Or a default light color if var not found
+        }
         ctx.fillRect(0, 0, canvas.width, canvas.height);
         ctx.restore();
 
@@ -98,6 +111,19 @@ document.addEventListener('DOMContentLoaded', () => {
                 for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
                 ctx.closePath();
                 ctx.stroke();
+            } else if (obj.type === 'frame' || obj.type === 'section') {
+                ctx.lineWidth = (obj.type === 'frame') ? 2 : 1;
+                ctx.strokeStyle = (obj.type === 'frame') ? obj.color || '#007BFF' : obj.color || '#AAAAAA';
+                ctx.setLineDash((obj.type === 'section') ? [5, 5] : []);
+                ctx.strokeRect(obj.x, obj.y, obj.width, obj.height);
+                ctx.setLineDash([]);
+                // Optional: Add title for sections
+                if (obj.type === 'section') {
+                    ctx.fillStyle = obj.color || '#333333';
+                    ctx.font = `bold ${14/scale}px sans-serif`;
+                    ctx.textAlign = 'left';
+                    ctx.fillText(obj.name || 'Section', obj.x + (5/scale), obj.y + (18/scale));
+                }
             } else if (obj.points) {  // freehand path
                 if (obj.points.length < 2) { ctx.restore(); return; }
                 ctx.moveTo(obj.points[0].x, obj.points[0].y);
@@ -152,7 +178,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         // Draw preview shape if in shape mode
-        if (isShaping && currentShapeType) {
+        if (isShaping && currentMode === 'shape') {
             ctx.beginPath();
             ctx.strokeStyle = currentColor;
             ctx.lineWidth = 2;
@@ -194,6 +220,18 @@ document.addEventListener('DOMContentLoaded', () => {
                 ctx.closePath();
                 ctx.stroke();
             }
+        }
+
+        // Draw preview frame/section if in framing mode
+        if (isFraming && currentFrameDrawType) {
+            ctx.beginPath();
+            ctx.lineWidth = (currentFrameDrawType === 'frame') ? 2 : 1; // Thicker for frame, thinner for section
+            ctx.strokeStyle = (currentFrameDrawType === 'frame') ? '#007BFF' : '#AAAAAA'; // Blue for frame, grey for section
+            ctx.setLineDash((currentFrameDrawType === 'section') ? [5, 5] : []);
+            const x = Math.min(frameStart.x, frameCurrent.x), y = Math.min(frameStart.y, frameCurrent.y);
+            const w = Math.abs(frameCurrent.x - frameStart.x), h = Math.abs(frameCurrent.y - frameStart.y);
+            ctx.strokeRect(x, y, w, h);
+            ctx.setLineDash([]);
         }
 
         ctx.restore();
@@ -260,7 +298,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 selected: false,
                 color: currentColor,
                 lineWidth: 2,      // Default line width
-                boundingBox: calculateBoundingBox([...currentPathPoints])
+                boundingBox: calculateBoundingBox({ points: [...currentPathPoints] })
             };
             paths.push(newPath);
             selectPath(newPath);
@@ -336,7 +374,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const dy = pos.y - dragStartY;
 
         // Move object based on type
-        if (selectedPath.type === 'rectangle') {
+        if (selectedPath.type === 'rectangle' || selectedPath.type === 'frame' || selectedPath.type === 'section') {
             selectedPath.x += dx;
             selectedPath.y += dy;
             selectedPath.boundingBox.minX += dx;
@@ -352,10 +390,10 @@ document.addEventListener('DOMContentLoaded', () => {
             selectedPath.boundingBox.maxY += dy;
         } else if (selectedPath.type === 'triangle' || selectedPath.type === 'star') {
             selectedPath.points.forEach(pt => { pt.x += dx; pt.y += dy; });
-            selectedPath.boundingBox = calculateBoundingBox(selectedPath.points);
+            selectedPath.boundingBox = calculateBoundingBox(selectedPath);
         } else {
             selectedPath.points.forEach(point => { point.x += dx; point.y += dy; });
-            selectedPath.boundingBox = calculateBoundingBox(selectedPath.points);
+            selectedPath.boundingBox = calculateBoundingBox(selectedPath);
         }
         dragStartX = pos.x; // Update drag start for next segment
         dragStartY = pos.y;
@@ -426,6 +464,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             } else if (currentMode === 'pan') {
                 startPan(e);
+            } else if (currentMode === 'frameDraw') {
+                isFraming = true;
+                frameStart = getMousePos(e);
+                frameCurrent = { ...frameStart };
             }
         } else if (e.button === 1 || e.buttons === 4) {
             startPan(e);
@@ -472,6 +514,10 @@ document.addEventListener('DOMContentLoaded', () => {
             canvas.style.cursor = hoverPath ? 'move' : 'default';
         } else if (currentMode === 'pan') {
             canvas.style.cursor = 'grab';
+        } else if (isFraming && currentMode === 'frameDraw') {
+            frameCurrent = getMousePos(e);
+            redrawCanvas();
+            return;
         }
     });
 
@@ -496,20 +542,20 @@ document.addEventListener('DOMContentLoaded', () => {
                     const w = Math.abs(x1 - x0), h = Math.abs(y1 - y0);
                     newObj = { id: nextPathId++, type: 'rectangle', tool: 'Rectangle', visible: true,
                         x, y, width: w, height: h, color: currentColor, lineWidth: 2,
-                        boundingBox: { minX: x, minY: y, maxX: x + w, maxY: y + h }
+                        boundingBox: calculateBoundingBox({type: 'rectangle', x, y, width: w, height: h })
                     };
                 } else if (currentShapeType === 'circle') {
                     const dx = x1 - x0, dy = y1 - y0;
                     const r = Math.hypot(dx, dy);
                     newObj = { id: nextPathId++, type: 'circle', tool: 'Circle', visible: true,
                         cx: x0, cy: y0, r, color: currentColor, lineWidth: 2,
-                        boundingBox: { minX: x0 - r, minY: y0 - r, maxX: x0 + r, maxY: y0 + r }
+                        boundingBox: calculateBoundingBox({type: 'circle', cx: x0, cy: y0, r })
                     };
                 } else if (currentShapeType === 'triangle') {
                     const p0 = { x: x0, y: y0 };
                     const p1 = { x: x1, y: y0 };
                     const p2 = { x: x0, y: y1 };
-                    const bb = calculateBoundingBox([p0, p1, p2]);
+                    const bb = calculateBoundingBox({points: [p0, p1, p2]});
                     newObj = { id: nextPathId++, type: 'triangle', tool: 'Triangle', visible: true,
                         points: [p0, p1, p2], color: currentColor, lineWidth: 2, boundingBox: bb
                     };
@@ -526,7 +572,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         const r = i % 2 === 0 ? outerR : innerR;
                         pts.push({ x: cx + Math.cos(angle)*r, y: cy + Math.sin(angle)*r });
                     }
-                    const bbStar = calculateBoundingBox(pts);
+                    const bbStar = calculateBoundingBox({points: pts});
                     newObj = { id: nextPathId++, type: 'star', tool: 'Star', visible: true,
                         points: pts, color: currentColor, lineWidth: 2, boundingBox: bbStar
                     };
@@ -536,6 +582,31 @@ document.addEventListener('DOMContentLoaded', () => {
                 redrawCanvas();
                 updateLayersPanel();
                 updatePropertiesPanel();
+                return;
+            } else if (isFraming && currentMode === 'frameDraw') {
+                isFraming = false;
+                const x = Math.min(frameStart.x, frameCurrent.x), y = Math.min(frameStart.y, frameCurrent.y);
+                const w = Math.abs(frameCurrent.x - frameStart.x), h = Math.abs(frameCurrent.y - frameStart.y);
+                if (w > 0 && h > 0) {
+                    const frameObj = {
+                        id: nextPathId++,
+                        type: currentFrameDrawType,
+                        tool: currentFrameDrawType.charAt(0).toUpperCase() + currentFrameDrawType.slice(1), // 'Frame' or 'Section'
+                        name: currentFrameDrawType === 'section' ? 'Section' : 'Frame',
+                        visible: true,
+                        x, y, width: w, height: h,
+                        color: (currentFrameDrawType === 'frame') ? '#007BFF' : '#AAAAAA',
+                        lineWidth: (currentFrameDrawType === 'frame') ? 2 : 1,
+                        boundingBox: calculateBoundingBox({type: currentFrameDrawType, x, y, width:w, height:h}),
+                        children: [], // For nesting objects later
+                        rotation: 0
+                    };
+                    paths.push(frameObj);
+                    selectPath(frameObj);
+                    updateLayersPanel();
+                    updatePropertiesPanel();
+                }
+                redrawCanvas();
                 return;
             }
         }
@@ -566,6 +637,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const selectModeButton = document.getElementById('select-mode');
     const panModeButton = document.getElementById('pan-mode');
     const colorPicker = document.getElementById('color-picker');
+    const darkModeToggleButton = document.getElementById('dark-mode-toggle'); // Added
     let currentMode = 'draw'; // Default mode
     let currentColor = '#000000'; // Default drawing color
     canvas.style.cursor = 'crosshair'; // Initial cursor for draw mode
@@ -621,6 +693,39 @@ document.addEventListener('DOMContentLoaded', () => {
             setActiveButton(shapeModeButton);
             shapeDropdown.classList.remove('visible');
         });
+    });
+
+    // Toggle frame dropdown
+    frameModeButton.addEventListener('click', () => {
+        frameDropdown.classList.toggle('visible');
+    });
+
+    // Select frame/section type and enter drawing mode
+    frameDropdown.querySelectorAll('button').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            currentFrameDrawType = e.target.dataset.frameType;
+            currentMode = 'frameDraw'; // New mode for drawing frames/sections
+            canvas.style.cursor = 'crosshair';
+            setActiveButton(frameModeButton); // Keep frame tool active
+            frameDropdown.classList.remove('visible');
+            isDrawing = false; isShaping = false; // Ensure other drawing modes are off
+            console.log(`${currentFrameDrawType} drawing mode selected`);
+        });
+    });
+
+    // --- Dark Mode Toggle Logic --- (Add this new section)
+    darkModeToggleButton.addEventListener('click', () => {
+        document.body.classList.toggle('dark-mode');
+        // Optionally, change button icon based on mode
+        if (document.body.classList.contains('dark-mode')) {
+            darkModeToggleButton.textContent = '🌙'; // Moon for dark mode
+        } else {
+            darkModeToggleButton.textContent = '☀️'; // Sun for light mode
+        }
+        // Redraw canvas if its appearance depends on dark mode (e.g., background)
+        // For now, the canvas background itself is white, so a redraw might not be strictly necessary
+        // unless elements within it are styled based on body class.
+        redrawCanvas(); 
     });
 
     // --- Ensure canvas redraws on window resize to keep it centered ---
@@ -697,6 +802,26 @@ document.addEventListener('DOMContentLoaded', () => {
     function updatePropertiesPanel() {
         propertiesPanelElement.innerHTML = '<h2>Properties</h2>';
         if (!selectedPath) return;
+
+        if (selectedPath.type === 'section') {
+            const nameDiv = document.createElement('div');
+            nameDiv.style.marginBottom = '8px';
+            const nameLabel = document.createElement('label');
+            nameLabel.textContent = 'Name: ';
+            nameLabel.htmlFor = 'prop-name-input';
+            const nameInput = document.createElement('input');
+            nameInput.type = 'text';
+            nameInput.id = 'prop-name-input';
+            nameInput.value = selectedPath.name || '';
+            nameInput.addEventListener('input', (e) => {
+                selectedPath.name = e.target.value;
+                redrawCanvas(); // To update section title
+                updateLayersPanel(); // To update layer name
+            });
+            nameDiv.appendChild(nameLabel);
+            nameDiv.appendChild(nameInput);
+            propertiesPanelElement.appendChild(nameDiv);
+        }
         // Color property
         const colorDiv = document.createElement('div');
         colorDiv.style.marginBottom = '8px';
@@ -714,62 +839,76 @@ document.addEventListener('DOMContentLoaded', () => {
         colorDiv.appendChild(colorLabel);
         colorDiv.appendChild(colorInput);
         propertiesPanelElement.appendChild(colorDiv);
-        // Size properties
-        const bb = selectedPath.boundingBox;
-        const currentW = bb.maxX - bb.minX;
-        const currentH = bb.maxY - bb.minY;
-        // Width control
-        const widthDiv = document.createElement('div');
-        widthDiv.style.marginBottom = '8px';
-        const widthLabel = document.createElement('label');
-        widthLabel.textContent = 'Width: ';
-        widthLabel.htmlFor = 'prop-width-input';
-        const widthInput = document.createElement('input');
-        widthInput.type = 'number';
-        widthInput.id = 'prop-width-input';
-        widthInput.value = currentW;
-        widthInput.style.width = '60px';
-        widthInput.addEventListener('change', (e) => {
-            const newW = parseFloat(e.target.value);
-            if (newW > 0 && currentW > 0) {
-                const scaleX = newW / currentW;
-                selectedPath.points.forEach(pt => {
-                    pt.x = bb.minX + (pt.x - bb.minX) * scaleX;
-                });
-                selectedPath.boundingBox = calculateBoundingBox(selectedPath.points);
-                redrawCanvas();
-                updatePropertiesPanel();
-            }
-        });
-        widthDiv.appendChild(widthLabel);
-        widthDiv.appendChild(widthInput);
-        propertiesPanelElement.appendChild(widthDiv);
-        // Height control
-        const heightDiv = document.createElement('div');
-        heightDiv.style.marginBottom = '8px';
-        const heightLabel = document.createElement('label');
-        heightLabel.textContent = 'Height: ';
-        heightLabel.htmlFor = 'prop-height-input';
-        const heightInput = document.createElement('input');
-        heightInput.type = 'number';
-        heightInput.id = 'prop-height-input';
-        heightInput.value = currentH;
-        heightInput.style.width = '60px';
-        heightInput.addEventListener('change', (e) => {
-            const newH = parseFloat(e.target.value);
-            if (newH > 0 && currentH > 0) {
-                const scaleY = newH / currentH;
-                selectedPath.points.forEach(pt => {
-                    pt.y = bb.minY + (pt.y - bb.minY) * scaleY;
-                });
-                selectedPath.boundingBox = calculateBoundingBox(selectedPath.points);
-                redrawCanvas();
-                updatePropertiesPanel();
-            }
-        });
-        heightDiv.appendChild(heightLabel);
-        heightDiv.appendChild(heightInput);
-        propertiesPanelElement.appendChild(heightDiv);
+
+        // Size properties - Show for rectangle, frame, section, or anything with a boundingBox
+        if (selectedPath.type === 'rectangle' || selectedPath.type === 'frame' || selectedPath.type === 'section' || (selectedPath.points && selectedPath.points.length > 0) ) {
+            const bb = selectedPath.boundingBox;
+            const currentW = bb.maxX - bb.minX;
+            const currentH = bb.maxY - bb.minY;
+            // Width control
+            const widthDiv = document.createElement('div');
+            widthDiv.style.marginBottom = '8px';
+            const widthLabel = document.createElement('label');
+            widthLabel.textContent = 'Width: ';
+            widthLabel.htmlFor = 'prop-width-input';
+            const widthInput = document.createElement('input');
+            widthInput.type = 'number';
+            widthInput.id = 'prop-width-input';
+            widthInput.value = parseFloat(currentW.toFixed(2));
+            widthInput.style.width = '60px';
+            widthInput.addEventListener('change', (e) => {
+                const newW = parseFloat(e.target.value);
+                if (newW > 0 && currentW > 0) {
+                    const scaleX = newW / currentW;
+                    if (selectedPath.type === 'rectangle' || selectedPath.type === 'frame' || selectedPath.type === 'section') {
+                        selectedPath.x = bb.minX; // Assuming resize from top-left for property change
+                        selectedPath.width *= scaleX;
+                    } else if (selectedPath.points) { // For point-based objects (triangle, star, freehand)
+                        selectedPath.points.forEach(pt => {
+                            pt.x = bb.minX + (pt.x - bb.minX) * scaleX;
+                        });
+                    }
+                    selectedPath.boundingBox = calculateBoundingBox(selectedPath.points || selectedPath); // Recalculate based on type
+                    redrawCanvas();
+                    updatePropertiesPanel(); // Refresh properties
+                }
+            });
+            widthDiv.appendChild(widthLabel);
+            widthDiv.appendChild(widthInput);
+            propertiesPanelElement.appendChild(widthDiv);
+
+            // Height control
+            const heightDiv = document.createElement('div');
+            heightDiv.style.marginBottom = '8px';
+            const heightLabel = document.createElement('label');
+            heightLabel.textContent = 'Height: ';
+            heightLabel.htmlFor = 'prop-height-input';
+            const heightInput = document.createElement('input');
+            heightInput.type = 'number';
+            heightInput.id = 'prop-height-input';
+            heightInput.value = parseFloat(currentH.toFixed(2));
+            heightInput.style.width = '60px';
+            heightInput.addEventListener('change', (e) => {
+                const newH = parseFloat(e.target.value);
+                if (newH > 0 && currentH > 0) {
+                    const scaleY = newH / currentH;
+                     if (selectedPath.type === 'rectangle' || selectedPath.type === 'frame' || selectedPath.type === 'section') {
+                        selectedPath.y = bb.minY; // Assuming resize from top-left
+                        selectedPath.height *= scaleY;
+                    } else if (selectedPath.points) { // For point-based objects
+                        selectedPath.points.forEach(pt => {
+                            pt.y = bb.minY + (pt.y - bb.minY) * scaleY;
+                        });
+                    }
+                    selectedPath.boundingBox = calculateBoundingBox(selectedPath.points || selectedPath); // Recalculate
+                    redrawCanvas();
+                    updatePropertiesPanel(); // Refresh properties
+                }
+            });
+            heightDiv.appendChild(heightLabel);
+            heightDiv.appendChild(heightInput);
+            propertiesPanelElement.appendChild(heightDiv);
+        }
     }
 
     // Function to delete a path by object reference
@@ -815,21 +954,32 @@ document.addEventListener('DOMContentLoaded', () => {
         return null;
     }
 
-    function calculateBoundingBox(points) {
-        if (!points || points.length === 0) {
-            return { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+    function calculateBoundingBox(object) {
+        if (!object) return { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+
+        if (object.type === 'rectangle' || object.type === 'frame' || object.type === 'section') {
+            return { minX: object.x, minY: object.y, maxX: object.x + object.width, maxY: object.y + object.height };
+        } else if (object.type === 'circle') {
+            return { minX: object.cx - object.r, minY: object.cy - object.r, maxX: object.cx + object.r, maxY: object.cy + object.r };
+        } else if (object.points && object.points.length > 0) {
+            // For paths, triangles, stars
+            let minX = object.points[0].x;
+            let minY = object.points[0].y;
+            let maxX = object.points[0].x;
+            let maxY = object.points[0].y;
+            for (let i = 1; i < object.points.length; i++) {
+                minX = Math.min(minX, object.points[i].x);
+                minY = Math.min(minY, object.points[i].y);
+                maxX = Math.max(maxX, object.points[i].x);
+                maxY = Math.max(maxY, object.points[i].y);
+            }
+            return { minX, minY, maxX, maxY };
+        } else if (object.x !== undefined && object.y !== undefined && object.width !== undefined && object.height !== undefined) {
+            // Fallback for objects that might be passed directly without being in `paths` array yet (e.g. during creation)
+            return { minX: object.x, minY: object.y, maxX: object.x + object.width, maxY: object.y + object.height };
         }
-        let minX = points[0].x;
-        let minY = points[0].y;
-        let maxX = points[0].x;
-        let maxY = points[0].y;
-        for (let i = 1; i < points.length; i++) {
-            minX = Math.min(minX, points[i].x);
-            minY = Math.min(minY, points[i].y);
-            maxX = Math.max(maxX, points[i].x);
-            maxY = Math.max(maxY, points[i].y);
-        }
-        return { minX, minY, maxX, maxY };
+        // Default for unrecognized or incomplete objects
+        return { minX: 0, minY: 0, maxX: 0, maxY: 0 };
     }
 
     function isPointInBox(point, box) {
@@ -853,50 +1003,76 @@ document.addEventListener('DOMContentLoaded', () => {
         return { x: 0, y: 0 };
     }
 
-    // Update getHandleAtPosition to detect rotate handle
-    function getHandleAtPosition(path, pos) {
-        if (selectedPath && path === selectedPath) {
-            const bb = path.boundingBox;
-            const half = handleSize / (2 * scale);
-            const center = getObjectCenter(path);
-            const rotY = bb.minY - (rotationHandleDistance / scale);
-            if (pos.x >= center.x - half && pos.x <= center.x + half && pos.y >= rotY - half && pos.y <= rotY + half) {
-                return 'rotate';
-            }
+    // Update getHandleAtPosition to account for object rotation
+    function getHandleAtPosition(path, mousePosWorld) {
+        if (!path || !path.boundingBox || !path.selected) return null;
+
+        const objectCenter = getObjectCenter(path);
+        const objectRotation = path.rotation || 0;
+
+        // Transform mouse position into the object's local (unrotated) coordinate system
+        let localMousePos = { x: mousePosWorld.x, y: mousePosWorld.y };
+        if (objectRotation !== 0) {
+            // Translate mouse so objectCenter is the origin
+            let translatedX = mousePosWorld.x - objectCenter.x;
+            let translatedY = mousePosWorld.y - objectCenter.y;
+
+            // Rotate mouse position by -objectRotation
+            const cosNegRotation = Math.cos(-objectRotation);
+            const sinNegRotation = Math.sin(-objectRotation);
+            const rotatedX = translatedX * cosNegRotation - translatedY * sinNegRotation;
+            const rotatedY = translatedX * sinNegRotation + translatedY * cosNegRotation;
+
+            // Translate mouse back
+            localMousePos = { x: rotatedX + objectCenter.x, y: rotatedY + objectCenter.y };
         }
-        if (!path || !path.boundingBox) return null;
-        const bb = path.boundingBox;
-        const half = handleSize / (2 * scale);
-        // Corner handles
+
+        const bb = path.boundingBox; // Bounding box is in object's unrotated space relative to its x,y or points
+        const hSizeScaled = handleSize / scale;
+        const halfHandle = hSizeScaled / 2;
+
+        // Check rotation handle (position is relative to unrotated object center and bb)
+        const rotHandleCenterY = bb.minY - (rotationHandleDistance / scale); // Y position of rotate handle in object's unrotated space
+        // The rotation handle is centered horizontally above the bounding box (using objectCenter.x)
+        if (localMousePos.x >= objectCenter.x - halfHandle && localMousePos.x <= objectCenter.x + halfHandle &&
+            localMousePos.y >= rotHandleCenterY - halfHandle && localMousePos.y <= rotHandleCenterY + halfHandle) {
+            return 'rotate';
+        }
+
+        // Check resize handles (corners and edges of the unrotated bounding box)
         const corners = {
             nw: { x: bb.minX, y: bb.minY },
             ne: { x: bb.maxX, y: bb.minY },
             se: { x: bb.maxX, y: bb.maxY },
             sw: { x: bb.minX, y: bb.maxY }
         };
+
         for (const dir in corners) {
             const h = corners[dir];
-            if (pos.x >= h.x - half && pos.x <= h.x + half && pos.y >= h.y - half && pos.y <= h.y + half) {
+            if (localMousePos.x >= h.x - halfHandle && localMousePos.x <= h.x + halfHandle &&
+                localMousePos.y >= h.y - halfHandle && localMousePos.y <= h.y + halfHandle) {
                 return dir;
             }
         }
-        // Edge handles (excluding corners region)
+
+        // Edge handles (check against unrotated bounding box edges)
         // North edge
-        if (pos.x >= bb.minX + half && pos.x <= bb.maxX - half && Math.abs(pos.y - bb.minY) <= half) {
+        if (localMousePos.x >= bb.minX + halfHandle && localMousePos.x <= bb.maxX - halfHandle && Math.abs(localMousePos.y - bb.minY) <= halfHandle) {
             return 'n';
         }
         // South edge
-        if (pos.x >= bb.minX + half && pos.x <= bb.maxX - half && Math.abs(pos.y - bb.maxY) <= half) {
+        if (localMousePos.x >= bb.minX + halfHandle && localMousePos.x <= bb.maxX - halfHandle && Math.abs(localMousePos.y - bb.maxY) <= halfHandle) {
             return 's';
         }
         // West edge
-        if (pos.y >= bb.minY + half && pos.y <= bb.maxY - half && Math.abs(pos.x - bb.minX) <= half) {
+        if (localMousePos.y >= bb.minY + halfHandle && localMousePos.y <= bb.maxY - halfHandle && Math.abs(localMousePos.x - bb.minX) <= halfHandle) {
             return 'w';
         }
         // East edge
-        if (pos.y >= bb.minY + half && pos.y <= bb.maxY - half && Math.abs(pos.x - bb.maxX) <= half) {
+        if (localMousePos.y >= bb.minY + halfHandle && localMousePos.y <= bb.maxY - halfHandle && Math.abs(localMousePos.x - bb.maxX) <= halfHandle) {
             return 'e';
         }
+
         return null;
     }
 
@@ -907,7 +1083,7 @@ document.addEventListener('DOMContentLoaded', () => {
         resizeHandle = handle;
         originalBB = { ...path.boundingBox };
         // Handle shape types
-        if (path.type === 'rectangle') {
+        if (path.type === 'rectangle' || path.type === 'frame' || path.type === 'section') {
             path.originalRect = { x: path.x, y: path.y, width: path.width, height: path.height };
         } else if (path.type === 'circle') {
             path.originalCircle = { cx: path.cx, cy: path.cy, r: path.r };
@@ -945,78 +1121,96 @@ document.addEventListener('DOMContentLoaded', () => {
     // Perform resizing
     function resizePath(e) {
         if (!isResizing || !selectedPath) return;
-        const pos = getMousePos(e);
+        const worldMousePos = getMousePos(e);
+
+        const objectCenter = getObjectCenter(selectedPath);
+        const objectRotation = selectedPath.rotation || 0;
+        let localMousePos = { x: worldMousePos.x, y: worldMousePos.y };
+
+        // Transform mouse position to object's local (unrotated) coordinate system
+        // if the object is rotated.
+        if (objectRotation !== 0) {
+            // Translate mouse so objectCenter is the origin for rotation
+            let translatedX = worldMousePos.x - objectCenter.x;
+            let translatedY = worldMousePos.y - objectCenter.y;
+
+            // Rotate mouse position by -objectRotation
+            const cosNegRotation = Math.cos(-objectRotation);
+            const sinNegRotation = Math.sin(-objectRotation);
+            const rotatedX = translatedX * cosNegRotation - translatedY * sinNegRotation;
+            const rotatedY = translatedX * sinNegRotation + translatedY * cosNegRotation;
+
+            // Translate mouse back
+            localMousePos = { x: rotatedX + objectCenter.x, y: rotatedY + objectCenter.y };
+        }
+
+        // Now, use localMousePos for all calculations instead of worldMousePos (or the old 'pos')
 
         // Resize based on type
-        if (selectedPath.type === 'rectangle') {
-            const rect = selectedPath.originalRect;
-            // calculate new width/height based on handle
+        if (selectedPath.type === 'rectangle' || selectedPath.type === 'frame' || selectedPath.type === 'section') {
+            const rect = selectedPath.originalRect; // originalRect is unrotated
             let nx = rect.x, ny = rect.y, nw = rect.width, nh = rect.height;
-            if (['nw','sw','w'].includes(resizeHandle)) {
-                nw = pivotX - pos.x;
-                nx = pos.x;
+
+            // Calculate new dimensions based on localMousePos and the unrotated pivot
+            if ([ 'nw', 'sw', 'w' ].includes(resizeHandle)) {
+                nw = pivotX - localMousePos.x;
+                nx = localMousePos.x;
             }
-            if (['ne','se','e'].includes(resizeHandle)) {
-                nw = pos.x - pivotX;
+            if ([ 'ne', 'se', 'e' ].includes(resizeHandle)) {
+                nw = localMousePos.x - pivotX;
                 nx = pivotX;
             }
-            if (['nw','ne','n'].includes(resizeHandle)) {
-                nh = pivotY - pos.y;
-                ny = pos.y;
+            if ([ 'nw', 'ne', 'n' ].includes(resizeHandle)) {
+                nh = pivotY - localMousePos.y;
+                ny = localMousePos.y;
             }
-            if (['sw','se','s'].includes(resizeHandle)) {
-                nh = pos.y - pivotY;
+            if ([ 'sw', 'se', 's' ].includes(resizeHandle)) {
+                nh = localMousePos.y - pivotY;
                 ny = pivotY;
             }
+
+            // Preserve aspect ratio if shift is held (optional, not implemented here)
+            // Apply new dimensions (these are in the object's local, unrotated frame)
             if (nw > 0) { selectedPath.x = nx; selectedPath.width = nw; }
             if (nh > 0) { selectedPath.y = ny; selectedPath.height = nh; }
-            selectedPath.boundingBox = { minX: selectedPath.x, minY: selectedPath.y,
-                maxX: selectedPath.x + selectedPath.width, maxY: selectedPath.y + selectedPath.height };
+            selectedPath.boundingBox = calculateBoundingBox(selectedPath);
         } else if (selectedPath.type === 'circle') {
-            // radius based on distance from center
-            const dx = pos.x - pivotX, dy = pos.y - pivotY;
+            // For circle, pivot is always center (objectCenter used for localMousePos transformation)
+            // Radius is distance from center to localMousePos
+            const dx = localMousePos.x - selectedPath.originalCircle.cx; // originalCircle.cx is unrotated center
+            const dy = localMousePos.y - selectedPath.originalCircle.cy; // originalCircle.cy is unrotated center
             const nr = Math.hypot(dx, dy);
             if (nr > 0) selectedPath.r = nr;
-            selectedPath.boundingBox = { minX: pivotX - nr, minY: pivotY - nr,
-                maxX: pivotX + nr, maxY: pivotY + nr };
-        } else if (selectedPath.type === 'triangle' || selectedPath.type === 'star') {
-            // scale points
+            // cx, cy of circle don't change during radius resize
+            selectedPath.boundingBox = calculateBoundingBox(selectedPath);
+        } else if (selectedPath.points) { // For triangle, star, freehand paths
             const oldW = originalBB.maxX - originalBB.minX;
             const oldH = originalBB.maxY - originalBB.minY;
-            let newW,newH;
+            if (oldW === 0 || oldH === 0) return; // Avoid division by zero
+
+            let newW, newH;
+            // Calculate new dimensions in local space
             switch(resizeHandle) {
-                case 'nw': newW = pivotX - pos.x; newH = pivotY - pos.y; break;
-                case 'ne': newW = pos.x - pivotX; newH = pivotY - pos.y; break;
-                case 'se': newW = pos.x - pivotX; newH = pos.y - pivotY; break;
-                case 'sw': newW = pivotX - pos.x; newH = pos.y - pivotY; break;
-                case 'n': newW = oldW; newH = pivotY - pos.y; break;
-                case 's': newW = oldW; newH = pos.y - pivotY; break;
-                case 'w': newW = pivotX - pos.x; newH = oldH; break;
-                case 'e': newW = pos.x - pivotX; newH = oldH; break;
+                case 'nw': newW = pivotX - localMousePos.x; newH = pivotY - localMousePos.y; break;
+                case 'ne': newW = localMousePos.x - pivotX; newH = pivotY - localMousePos.y; break;
+                case 'se': newW = localMousePos.x - pivotX; newH = localMousePos.y - pivotY; break;
+                case 'sw': newW = pivotX - localMousePos.x; newH = localMousePos.y - pivotY; break;
+                case 'n':  newW = oldW; newH = pivotY - localMousePos.y; break;
+                case 's':  newW = oldW; newH = localMousePos.y - pivotY; break;
+                case 'w':  newW = pivotX - localMousePos.x; newH = oldH; break;
+                case 'e':  newW = localMousePos.x - pivotX; newH = oldH; break;
+                default: return; // Should not happen
             }
-            const sX = newW / oldW, sY = newH / oldH;
-            selectedPath.points = originalPoints.map(p => ({ x: pivotX + (p.x - pivotX) * sX,
-                                                           y: pivotY + (p.y - pivotY) * sY }));
-            selectedPath.boundingBox = calculateBoundingBox(selectedPath.points);
-        } else {
-            // freehand path
-            const oldW = originalBB.maxX - originalBB.minX;
-            const oldH = originalBB.maxY - originalBB.minY;
-            let newW,newH;
-            switch(resizeHandle) {
-                case 'nw': newW = pivotX - pos.x; newH = pivotY - pos.y; break;
-                case 'ne': newW = pos.x - pivotX; newH = pivotY - pos.y; break;
-                case 'se': newW = pos.x - pivotX; newH = pos.y - pivotY; break;
-                case 'sw': newW = pivotX - pos.x; newH = pos.y - pivotY; break;
-                case 'n': newW = oldW; newH = pivotY - pos.y; break;
-                case 's': newW = oldW; newH = pos.y - pivotY; break;
-                case 'w': newW = pivotX - pos.x; newH = oldH; break;
-                case 'e': newW = pos.x - pivotX; newH = oldH; break;
-            }
-            const sX = newW / oldW, sY = newH / oldH;
-            selectedPath.points = originalPoints.map(p => ({ x: pivotX + (p.x - pivotX) * sX,
-                                                           y: pivotY + (p.y - pivotY) * sY }));
-            selectedPath.boundingBox = calculateBoundingBox(selectedPath.points);
+
+            const scaleX = (oldW === 0) ? 1 : newW / oldW;
+            const scaleY = (oldH === 0) ? 1 : newH / oldH;
+
+            // originalPoints are in unrotated local space, pivotX/pivotY are also in that space.
+            selectedPath.points = originalPoints.map(p => ({
+                x: pivotX + (p.x - pivotX) * scaleX,
+                y: pivotY + (p.y - pivotY) * scaleY
+            }));
+            selectedPath.boundingBox = calculateBoundingBox(selectedPath);
         }
         redrawCanvas();
     }
@@ -1028,22 +1222,6 @@ document.addEventListener('DOMContentLoaded', () => {
         canvas.style.cursor = 'default';
         updatePropertiesPanel();
         updateLayersPanel();
-    }
-
-    // Add helper to get object center
-    function getObjectCenter(obj) {
-        if (obj.type === 'rectangle') {
-            return { x: obj.x + obj.width/2, y: obj.y + obj.height/2 };
-        } else if (obj.type === 'circle') {
-            return { x: obj.cx, y: obj.cy };
-        } else if (obj.type === 'triangle' || obj.type === 'star') {
-            const bb = obj.boundingBox;
-            return { x: (bb.minX + bb.maxX)/2, y: (bb.minY + bb.maxY)/2 };
-        } else if (obj.points) { // freehand path
-            const bb = obj.boundingBox;
-            return { x: (bb.minX + bb.maxX)/2, y: (bb.minY + bb.maxY)/2 };
-        }
-        return { x: 0, y: 0 };
     }
 
     // Add rotation functions
